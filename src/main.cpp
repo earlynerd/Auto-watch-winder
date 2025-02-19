@@ -4,12 +4,14 @@
 #include "TMCStepper.h"
 #include <math.h>
 
-const float turns_per_day = 900.0;
-const float active_interval = 120.0;       //2 minutes on
-const float rest_interval = 360.0;         //6 minutes off
+const float turns_per_day = 9000.0;
+const float active_interval = 5.0;       //2 minutes on
+const float rest_interval = 5.0;         //6 minutes off
 float intervals_per_day;
 float turns_per_interval;
 float turns_per_second;
+const float phase = 30.0;
+float phaseDelay;
 
 
 TMC2209Stepper driver_x = TMC2209Stepper(&Serial1, 0.22, 1);
@@ -21,7 +23,7 @@ FastAccelStepper *stepper_x = NULL;
 FastAccelStepper *stepper_y = NULL;
 FastAccelStepper *stepper_z = NULL;
 
-const uint16_t motor_current = 100;
+const uint16_t motor_current = 200;
 const uint16_t microsteps = 16;
 void configureStepper(FastAccelStepper **s, int step_pin, int dir_pin, int en_pin);
 void configureDriver(TMC2209Stepper *d, uint16_t current, uint16_t mstep);
@@ -36,6 +38,7 @@ void setup()
   turns_per_interval = turns_per_day / intervals_per_day;
   turns_per_interval = ceil(turns_per_interval);    //round up to whole revolutions so the watches rest facing upright
   turns_per_second = turns_per_interval / active_interval;
+  phaseDelay = (phase /360.0) / turns_per_second;
   Serial.printf("%.1f intervals per day, %.2f turns per interval, rounding up. equals %.3f turns per second.\n", intervals_per_day, turns_per_interval, turns_per_second);
   configureDriver(&driver_x, motor_current, microsteps); // Initiate pins and registeries
   configureDriver(&driver_y, motor_current, microsteps);
@@ -44,26 +47,27 @@ void setup()
   configureStepper(&stepper_x, X_STEP_PIN, X_DIR_PIN, X_ENABLE_PIN);
   configureStepper(&stepper_y, Y_STEP_PIN, Y_DIR_PIN, Y_ENABLE_PIN);
   configureStepper(&stepper_z, Z_STEP_PIN, Z_DIR_PIN, Z_ENABLE_PIN);
+  
 }
 
 void loop()
 {
   stepper_x->moveTo(turns_per_interval * 200 * microsteps);
-  delay(1000);
+  delay(1000.0 * phaseDelay);
   stepper_y->moveTo(turns_per_interval * 200 * microsteps);
-  delay(1000);
+  delay(1000.0 * phaseDelay);
   stepper_z->moveTo(turns_per_interval * 200 * microsteps);
-  delay(1000);
-  while (stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning())
-    delay(1000 * rest_interval);
+  delay(1000.0 * phaseDelay);
+  while (stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+  delay(1000.0 * rest_interval);
   stepper_x->moveTo(0 * 200 * microsteps);
-  delay(1000);
+  delay(1000.0 * phaseDelay);
   stepper_y->moveTo(0 * 200 * microsteps);
-  delay(1000);
+  delay(1000.0 * phaseDelay);
   stepper_z->moveTo(0 * 200 * microsteps);
-  delay(1000);
-  while (stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning())
-    delay(1000 * rest_interval);
+  delay(1000.0 * phaseDelay);
+  while (stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+  delay(1000.0 * rest_interval);
 }
 
 void configureStepper(FastAccelStepper **s, int step_pin, int dir_pin, int en_pin)
@@ -74,9 +78,10 @@ void configureStepper(FastAccelStepper **s, int step_pin, int dir_pin, int en_pi
     FastAccelStepper *sptr = *s;
     sptr->setDirectionPin(dir_pin);
     sptr->setEnablePin(en_pin);
-    sptr->setAutoEnable(true);
+    sptr->setAutoEnable(false);
     sptr->setSpeedInHz((uint32_t)(turns_per_second * 200.0 * (float)microsteps));
-    sptr->setAcceleration(1000);
+    sptr->setAcceleration(4000);
+    sptr->enableOutputs();
     // sptr->move(1000);
   }
 }
