@@ -3,6 +3,7 @@
 #include "FastAccelStepper.h"
 #include "TMCStepper.h"
 #include <math.h>
+#include <driver/pcnt.h>
 
 const float turns_per_day = 1500.0;
 const float active_interval = 120.0; // 2 minutes on
@@ -18,6 +19,11 @@ const int homingSpeed = 2000;
 
 const int doorPin = X_STOP_PIN;
 
+const int homeswitch_x = TEMP_0_PIN;
+const int homeswitch_y = Y_STOP_PIN;
+const int homeswitch_z = TEMP_BED_PIN;
+
+
 TMC2209Stepper driver_x = TMC2209Stepper(&Serial1, 0.22, 1);
 TMC2209Stepper driver_y = TMC2209Stepper(&Serial1, 0.22, 3);
 TMC2209Stepper driver_z = TMC2209Stepper(&Serial1, 0.22, 0);
@@ -27,9 +33,16 @@ FastAccelStepper *stepper_x = NULL;
 FastAccelStepper *stepper_y = NULL;
 FastAccelStepper *stepper_z = NULL;
 
-const uint8_t stepper_x_pulsecounter = 1;
-const uint8_t stepper_y_pulsecounter = 2;
-const uint8_t stepper_z_pulsecounter = 3;
+const pcnt_unit_t stepper_x_pulsecounter = PCNT_UNIT_0;
+const pcnt_unit_t stepper_y_pulsecounter = PCNT_UNIT_1;
+const pcnt_unit_t stepper_z_pulsecounter = PCNT_UNIT_2;
+
+volatile int16_t XPulsecounterLatch;
+volatile int16_t YPulsecounterLatch;
+volatile int16_t ZPulsecounterLatch;
+
+volatile bool xisrtriggered, yisrtriggered, zisrtriggered;
+
 
 const uint16_t motor_current = 200;
 const uint16_t microsteps = 16;
@@ -53,6 +66,11 @@ WinderState winderMachine();
 void configureStepper(FastAccelStepper **s, int step_pin, int dir_pin, int en_pin, uint8_t pulsecounter);
 void configureDriver(TMC2209Stepper *d, uint16_t current, uint16_t mstep);
 void hardwareInit();
+bool homeAllWatches();
+void X_Switch_isr(void);
+void Y_Switch_isr(void);
+void Z_Switch_isr(void);
+
 
 void setup()
 {
@@ -70,6 +88,11 @@ void setup()
   destination = (int16_t)(turns_per_interval * 200.0 * (float)microsteps);
   // hardwareInit();
   pinMode(doorPin, INPUT_PULLUP);
+
+  pinMode(homeswitch_x, INPUT);
+  pinMode(homeswitch_y, INPUT);
+  pinMode(homeswitch_z, INPUT);
+
   hardwareInit();
 }
 
@@ -128,7 +151,7 @@ WinderState winderMachine()
   static WinderState presentState = BOOT, nextState = BOOT;
   static bool stateEntry = true;
   static unsigned long stateEntryTime = 0;
-  
+
   if (!digitalRead(doorPin))
   {
     if ((presentState != DOOR_OPENED) && (presentState != TRAVEL_HOME) && (presentState != DOOR_OPEN_PAUSED))
@@ -136,7 +159,7 @@ WinderState winderMachine()
       nextState = DOOR_OPENED;
     }
   }
-  
+
   if (presentState != nextState)
   {
     stateEntryTime = millis();
@@ -228,9 +251,12 @@ WinderState winderMachine()
   case HOMING:
   {
     if (stateEntry)
+    {
       Serial.printf("Entered HOMING State, %d\n", millis());
+    }
+    homeAllWatches();
     nextState = STARTING_1;
-    // probably a whole secondary state machine runs here
+    
   }
   break;
   case DOOR_OPENED:
@@ -340,4 +366,114 @@ void hardwareInit()
   configureStepper(&stepper_x, X_STEP_PIN, X_DIR_PIN, X_ENABLE_PIN, stepper_x_pulsecounter);
   configureStepper(&stepper_y, Y_STEP_PIN, Y_DIR_PIN, Y_ENABLE_PIN, stepper_y_pulsecounter);
   configureStepper(&stepper_z, Z_STEP_PIN, Z_DIR_PIN, Z_ENABLE_PIN, stepper_z_pulsecounter);
+}
+
+bool homeAllWatches()
+{
+  //homing procedure steps 
+  //stop all movement, if any
+  stepper_x->setSpeedInHz(0);
+  stepper_y->setSpeedInHz(0);
+  stepper_z->setSpeedInHz(0);
+  while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+
+  //check if any homeswitches already pressed
+  //if so, move those  motors out of their home switch backwards and then stop them
+  if(!digitalRead(homeswitch_x) || !digitalRead(homeswitch_y) || !digitalRead(homeswitch_z))
+  {
+    if(!digitalRead(homeswitch_x)) stepper_x->setSpeedInHz(-homingSpeed);
+    if(!digitalRead(homeswitch_y)) stepper_y->setSpeedInHz(-homingSpeed);
+    if(!digitalRead(homeswitch_z)) stepper_z->setSpeedInHz(-homingSpeed);
+    while(!digitalRead(homeswitch_x) || !digitalRead(homeswitch_y) || !digitalRead(homeswitch_z))
+    {
+      if(!digitalRead(homeswitch_x)) stepper_x->setSpeedInHz(0);
+      if(!digitalRead(homeswitch_y)) stepper_y->setSpeedInHz(0);
+      if(!digitalRead(homeswitch_z)) stepper_z->setSpeedInHz(0);
+    }
+    stepper_x->setSpeedInHz(0);
+    stepper_y->setSpeedInHz(0);
+    stepper_z->setSpeedInHz(0);
+    while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+  }
+
+  //all motors now out of their home switches and also stopped
+  //clear pulsecounters and stateful stuff
+  stepper_x->clearPulseCounter();
+  stepper_y->clearPulseCounter();
+  stepper_z->clearPulseCounter();
+  XPulsecounterLatch = 0;
+  YPulsecounterLatch = 0;
+  ZPulsecounterLatch = 0;
+  xisrtriggered = false;
+  yisrtriggered = false;
+  zisrtriggered = false;
+
+  //set up pin interrupts, start slow homing movement toward switch. interrupt captures pulsecounter at edge of switch
+  attachInterrupt(homeswitch_x, X_Switch_isr, FALLING);
+  attachInterrupt(homeswitch_y, Y_Switch_isr, FALLING);
+  attachInterrupt(homeswitch_z, Z_Switch_isr, FALLING);
+  stepper_x->setSpeedInHz(homingSpeed);
+  stepper_y->setSpeedInHz(homingSpeed);
+  stepper_z->setSpeedInHz(homingSpeed);
+
+  //wait for all three to fire
+  //if an intgerrupt fires for a motor, stop that motor
+  while(!xisrtriggered || !yisrtriggered || !zisrtriggered)
+  {
+    if(xisrtriggered) stepper_x->setSpeedInHz(0);
+    if(yisrtriggered) stepper_y->setSpeedInHz(0);
+    if(zisrtriggered) stepper_z->setSpeedInHz(0);
+  }
+  stepper_x->setSpeedInHz(0);
+  stepper_y->setSpeedInHz(0);
+  stepper_z->setSpeedInHz(0);
+  detachInterrupt(homeswitch_x);
+  detachInterrupt(homeswitch_y);
+  detachInterrupt(homeswitch_z);
+  while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+
+  //do some math using pulse counter captures, set current position such that the switch edge is 0
+  int16_t xcurrentcount=0;
+  pcnt_get_counter_value(stepper_x_pulsecounter, &xcurrentcount);
+  int16_t xoverrun = xcurrentcount - XPulsecounterLatch;
+  stepper_x->setCurrentPosition(xoverrun);
+
+  int16_t ycurrentcount=0;
+  pcnt_get_counter_value(stepper_y_pulsecounter, &ycurrentcount);
+  int16_t yoverrun = ycurrentcount - YPulsecounterLatch;
+  stepper_y->setCurrentPosition(yoverrun);
+
+  int16_t zcurrentcount=0;
+  pcnt_get_counter_value(stepper_z_pulsecounter, &zcurrentcount);
+  int16_t zoverrun = zcurrentcount - ZPulsecounterLatch;
+  stepper_z->setCurrentPosition(zoverrun);
+
+  //command all motors to move back to 0
+  stepper_x->moveTo(0);
+  stepper_y->moveTo(0);
+  stepper_z->moveTo(0);
+
+  //wait for them to come to a stop
+  while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+
+  //return
+  return true;
+}
+
+void X_Switch_isr(void)
+{
+  pcnt_get_counter_value(stepper_x_pulsecounter, (int16_t*)&XPulsecounterLatch);
+  xisrtriggered = true;
+}
+
+void Y_Switch_isr(void)
+{
+  pcnt_get_counter_value(stepper_y_pulsecounter, (int16_t*)&YPulsecounterLatch);
+  yisrtriggered = true;
+}
+
+void Z_Switch_isr(void)
+{
+  pcnt_get_counter_value(stepper_z_pulsecounter, (int16_t*)&ZPulsecounterLatch);
+  zisrtriggered = true;
 }
