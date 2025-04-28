@@ -8,15 +8,22 @@
 const float turns_per_day = 1500.0;
 const float active_interval = 120.0; // 2 minutes on
 const float rest_interval = 360.0;   // 6 minutes off
+
 float intervals_per_day;
 float turns_per_interval;
 float turns_per_second;
+
 const float phaseAngle = 30.0;
 float phaseDelay;
+
 int runSpeed;
+const uint16_t runaccel = 2500;
+
 int destination;
 const int homingSpeed = 1000;
-const uint16_t runaccel = 2500;
+
+//this is to compensate for offset between the home switch position and vertical
+const float homeswitchAngularOffset = 47.0;
 
 const int doorPin = TE_PIN;
 
@@ -488,20 +495,21 @@ bool homeAllWatches()
 
   // do some math using pulse counter captures, set current position such that the switch edge is 0
   int16_t xcurrentcount = stepper_x->readPulseCounter();
+  int16_t stepsoffset = (homeswitchAngularOffset / 360.0) * (200.0 * 16.0); //this is to compensate for offset between teh home switch adn vertical
 
   int16_t xoverrun = xcurrentcount - XPulsecounterLatch;
-  stepper_x->setCurrentPosition(xoverrun);
+  stepper_x->setCurrentPosition(xoverrun + stepsoffset);
   Serial.printf("new X zero position at %d counts.\n", xoverrun);
 
   int16_t ycurrentcount = stepper_y->readPulseCounter();
 
   int16_t yoverrun = ycurrentcount - YPulsecounterLatch;
-  stepper_y->setCurrentPosition(yoverrun);
+  stepper_y->setCurrentPosition(yoverrun + stepsoffset);
   Serial.printf("new Y zero position at %d counts.\n", yoverrun);
 
   int16_t zcurrentcount = stepper_z->readPulseCounter();
   int16_t zoverrun = zcurrentcount - ZPulsecounterLatch;
-  stepper_z->setCurrentPosition(zoverrun);
+  stepper_z->setCurrentPosition(zoverrun + stepsoffset);
   Serial.printf("new Z zero position at %d counts.\n", zoverrun);
 
   // command all motors to move back to 0
@@ -518,6 +526,7 @@ bool homeAllWatches()
   stepper_x->setSpeedInHz(runSpeed);
   stepper_y->setSpeedInHz(runSpeed);
   stepper_z->setSpeedInHz(runSpeed);
+  delay(250);
   return true;
 }
 
