@@ -17,11 +17,11 @@ int runSpeed;
 int destination;
 const int homingSpeed = 4000;
 
-const int doorPin = X_STOP_PIN;
+const int doorPin = TE_PIN;
 
-const int homeswitch_x = TEMP_0_PIN;
+const int homeswitch_x = X_STOP_PIN;
 const int homeswitch_y = Y_STOP_PIN;
-const int homeswitch_z = TEMP_BED_PIN;
+const int homeswitch_z = Z_STOP_PIN;
 
 
 TMC2209Stepper driver_x = TMC2209Stepper(&Serial1, 0.22, 1);
