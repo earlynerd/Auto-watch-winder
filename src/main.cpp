@@ -15,7 +15,7 @@ const float phaseAngle = 30.0;
 float phaseDelay;
 int runSpeed;
 int destination;
-const int homingSpeed = 2000;
+const int homingSpeed = 4000;
 
 const int doorPin = X_STOP_PIN;
 
@@ -76,7 +76,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial1.begin(9600, SERIAL_8N1, HARDWARE_SERIAL1_RX, HARDWARE_SERIAL1_TX);
-  delay(4000);
+  //delay(4000);
   Serial.printf("%.1f turns per day, %.1f seconds spin, %.1f seconds rest\n", turns_per_day, active_interval, rest_interval);
   intervals_per_day = (24.0 * 60.0 * 60.0) / (active_interval + rest_interval);
   turns_per_interval = turns_per_day / intervals_per_day;
@@ -89,9 +89,9 @@ void setup()
   // hardwareInit();
   pinMode(doorPin, INPUT_PULLUP);
 
-  pinMode(homeswitch_x, INPUT);
-  pinMode(homeswitch_y, INPUT);
-  pinMode(homeswitch_z, INPUT);
+  pinMode(homeswitch_x, INPUT_PULLUP);
+  pinMode(homeswitch_y, INPUT_PULLUP);
+  pinMode(homeswitch_z, INPUT_PULLUP);
 
   hardwareInit();
 }
@@ -121,7 +121,7 @@ void loop()
 
 void configureStepper(FastAccelStepper **s, int step_pin, int dir_pin, int en_pin, uint8_t pulsecounter)
 {
-  *s = engine.stepperConnectToPin(step_pin);
+  *s = engine.stepperConnectToPin(step_pin, DRIVER_RMT);
   if (*s)
   {
     FastAccelStepper *sptr = *s;
@@ -131,7 +131,7 @@ void configureStepper(FastAccelStepper **s, int step_pin, int dir_pin, int en_pi
     sptr->attachToPulseCounter(pulsecounter);
     sptr->clearPulseCounter();
     sptr->setSpeedInHz((uint32_t)(turns_per_second * 200.0 * (float)microsteps));
-    sptr->setAcceleration(4000);
+    sptr->setAcceleration(10000);
     sptr->enableOutputs();
     // sptr->move(1000);
   }
@@ -173,7 +173,7 @@ WinderState winderMachine()
   {
     if (stateEntry)
       Serial.printf("Entered Boot State, %d\n", millis());
-    nextState = STARTING_1;
+    nextState = HOMING;
   }
   break;
   case IDLE:
@@ -370,6 +370,7 @@ void hardwareInit()
 
 bool homeAllWatches()
 {
+  Serial.println("Entered homing routine");
   //homing procedure steps 
   //stop all movement, if any
   stepper_x->setSpeedInHz(0);
@@ -381,23 +382,30 @@ bool homeAllWatches()
   //if so, move those  motors out of their home switch backwards and then stop them
   if(!digitalRead(homeswitch_x) || !digitalRead(homeswitch_y) || !digitalRead(homeswitch_z))
   {
-    if(!digitalRead(homeswitch_x)) stepper_x->setSpeedInHz(-homingSpeed);
-    if(!digitalRead(homeswitch_y)) stepper_y->setSpeedInHz(-homingSpeed);
-    if(!digitalRead(homeswitch_z)) stepper_z->setSpeedInHz(-homingSpeed);
+    Serial.print("One or more motors already in the home switch, moving them out: ");
+    if(!digitalRead(homeswitch_x)) Serial.print("X");
+    if(!digitalRead(homeswitch_y)) Serial.print("Y");
+    if(!digitalRead(homeswitch_z)) Serial.print("Z");
+    Serial.println();
+    if(!digitalRead(homeswitch_x)) {stepper_x->setSpeedInHz(homingSpeed); stepper_x->runForward();};
+    if(!digitalRead(homeswitch_y)) {stepper_y->setSpeedInHz(homingSpeed); stepper_y->runForward();};
+    if(!digitalRead(homeswitch_z)) {stepper_z->setSpeedInHz(homingSpeed); stepper_z->runForward();};
     while(!digitalRead(homeswitch_x) || !digitalRead(homeswitch_y) || !digitalRead(homeswitch_z))
     {
-      if(!digitalRead(homeswitch_x)) stepper_x->setSpeedInHz(0);
-      if(!digitalRead(homeswitch_y)) stepper_y->setSpeedInHz(0);
-      if(!digitalRead(homeswitch_z)) stepper_z->setSpeedInHz(0);
+      if(!digitalRead(homeswitch_x) && stepper_x->isRunningContinuously()) stepper_x->stopMove();
+      if(!digitalRead(homeswitch_y) && stepper_y->isRunningContinuously()) stepper_y->stopMove();
+      if(!digitalRead(homeswitch_z) && stepper_z->isRunningContinuously()) stepper_z->stopMove();
     }
-    stepper_x->setSpeedInHz(0);
-    stepper_y->setSpeedInHz(0);
-    stepper_z->setSpeedInHz(0);
-    while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
-  }
+    stepper_x->stopMove();
+    stepper_y->stopMove();
+    stepper_z->stopMove();
+    while(stepper_x->isStopping() || stepper_y->isStopping() || stepper_z->isStopping());
+    if(!digitalRead(homeswitch_x)) Serial.println("All motors clear of home switch and stopped");
+    }
 
   //all motors now out of their home switches and also stopped
   //clear pulsecounters and stateful stuff
+  Serial.println("setting up interrupts");
   stepper_x->clearPulseCounter();
   stepper_y->clearPulseCounter();
   stepper_z->clearPulseCounter();
@@ -409,53 +417,81 @@ bool homeAllWatches()
   zisrtriggered = false;
 
   //set up pin interrupts, start slow homing movement toward switch. interrupt captures pulsecounter at edge of switch
-  attachInterrupt(homeswitch_x, X_Switch_isr, FALLING);
-  attachInterrupt(homeswitch_y, Y_Switch_isr, FALLING);
-  attachInterrupt(homeswitch_z, Z_Switch_isr, FALLING);
+  //attachInterrupt(homeswitch_x, X_Switch_isr, FALLING);
+  //attachInterrupt(homeswitch_y, Y_Switch_isr, FALLING);
+  //attachInterrupt(homeswitch_z, Z_Switch_isr, FALLING);
   stepper_x->setSpeedInHz(homingSpeed);
   stepper_y->setSpeedInHz(homingSpeed);
-  stepper_z->setSpeedInHz(homingSpeed);
-
+  stepper_z->setSpeedInHz(homingSpeed);\
+  Serial.println("Begin move toward homing switch");
+  stepper_x->runBackward();
+  stepper_y->runBackward();
+  stepper_z->runBackward();
+  bool xhomingcomplete = false, yhomingcomplete=false, zhomingcomplete=false;
   //wait for all three to fire
   //if an intgerrupt fires for a motor, stop that motor
-  while(!xisrtriggered || !yisrtriggered || !zisrtriggered)
+  while(!xhomingcomplete || !yhomingcomplete || !zhomingcomplete)
   {
-    if(xisrtriggered) stepper_x->setSpeedInHz(0);
-    if(yisrtriggered) stepper_y->setSpeedInHz(0);
-    if(zisrtriggered) stepper_z->setSpeedInHz(0);
+    if(!digitalRead(homeswitch_x) &&  !xhomingcomplete) 
+    {
+      stepper_x->forceStop();
+      Serial.println("Motor X triggered home switch");
+      xhomingcomplete = true;
+      xisrtriggered = false;
+      XPulsecounterLatch = stepper_x->readPulseCounter();
+    }
+    if(!digitalRead(homeswitch_x) &&  !yhomingcomplete)
+    {
+      stepper_y->forceStop();
+      Serial.println("Motor Y triggered home switch");
+      yhomingcomplete = true;
+      yisrtriggered = false;
+      YPulsecounterLatch = stepper_y->readPulseCounter();
+    } 
+    if(!digitalRead(homeswitch_x) && !zhomingcomplete)
+    {
+      stepper_z->forceStop();
+      Serial.println("Motor Z triggered home switch");
+      zhomingcomplete = true;
+      zisrtriggered = false;
+      ZPulsecounterLatch = stepper_z->readPulseCounter();
+    } 
   }
-  stepper_x->setSpeedInHz(0);
-  stepper_y->setSpeedInHz(0);
-  stepper_z->setSpeedInHz(0);
-  detachInterrupt(homeswitch_x);
-  detachInterrupt(homeswitch_y);
-  detachInterrupt(homeswitch_z);
-  while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
+  stepper_x->stopMove();
+  stepper_y->stopMove();
+  stepper_z->stopMove();
+  
+  
+  
+  //while(stepper_x->isStopping() || stepper_y->isStopping() || stepper_z->isStopping());
 
   //do some math using pulse counter captures, set current position such that the switch edge is 0
-  int16_t xcurrentcount=0;
-  pcnt_get_counter_value(stepper_x_pulsecounter, &xcurrentcount);
+  int16_t xcurrentcount= stepper_x->readPulseCounter();
+  
   int16_t xoverrun = xcurrentcount - XPulsecounterLatch;
   stepper_x->setCurrentPosition(xoverrun);
+  Serial.printf("new X zero position at %d counts.\n", xoverrun);
 
-  int16_t ycurrentcount=0;
-  pcnt_get_counter_value(stepper_y_pulsecounter, &ycurrentcount);
+  int16_t ycurrentcount=stepper_y->readPulseCounter();
+  
   int16_t yoverrun = ycurrentcount - YPulsecounterLatch;
   stepper_y->setCurrentPosition(yoverrun);
+  Serial.printf("new Y zero position at %d counts.\n", yoverrun);
 
-  int16_t zcurrentcount=0;
-  pcnt_get_counter_value(stepper_z_pulsecounter, &zcurrentcount);
+  int16_t zcurrentcount=stepper_z->readPulseCounter();
   int16_t zoverrun = zcurrentcount - ZPulsecounterLatch;
   stepper_z->setCurrentPosition(zoverrun);
+  Serial.printf("new Z zero position at %d counts.\n", zoverrun);
 
   //command all motors to move back to 0
   stepper_x->moveTo(0);
   stepper_y->moveTo(0);
   stepper_z->moveTo(0);
+  Serial.println("Moving all motors to home");
 
   //wait for them to come to a stop
   while(stepper_x->isRunning() || stepper_y->isRunning() || stepper_z->isRunning());
-
+  Serial.println("Homing complete!");
   //return
   return true;
 }
@@ -464,16 +500,19 @@ void X_Switch_isr(void)
 {
   pcnt_get_counter_value(stepper_x_pulsecounter, (int16_t*)&XPulsecounterLatch);
   xisrtriggered = true;
+  detachInterrupt(homeswitch_x);
 }
 
 void Y_Switch_isr(void)
 {
   pcnt_get_counter_value(stepper_y_pulsecounter, (int16_t*)&YPulsecounterLatch);
   yisrtriggered = true;
+  detachInterrupt(homeswitch_y);
 }
 
 void Z_Switch_isr(void)
 {
   pcnt_get_counter_value(stepper_z_pulsecounter, (int16_t*)&ZPulsecounterLatch);
   zisrtriggered = true;
+  detachInterrupt(homeswitch_z);
 }
